@@ -1,0 +1,68 @@
+name: Build TWRP for SM-T395
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 340
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/share/swift
+          sudo docker image prune --all --force || true
+          df -h /
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openjdk-8-jdk git-core gnupg flex bison build-essential zip curl zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig libncurses5 python3 python-is-python3 libssl-dev bc rsync file
+          sudo update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java || true
+          sudo update-alternatives --set javac /usr/lib/jvm/java-8-openjdk-amd64/bin/javac || true
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo -o repo
+          sudo install -m 755 repo /usr/local/bin/repo
+          git config --global user.name build
+          git config --global user.email build@example.com
+          git config --global color.ui false
+      - name: Sync TWRP 9.0 minimal source
+        run: |
+          mkdir -p ~/twrp && cd ~/twrp
+          repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-9.0
+          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags
+          df -h /
+      - name: Add device tree and apply patches
+        run: |
+          cd ~/twrp
+          git clone --depth=1 -b android17-layout https://github.com/qcom-toolbox/TWRP_GTA2LTE device/samsung/gtactive2lte
+          cd device/samsung/gtactive2lte
+          ls patches
+          for pair in build_make:build/make bootable_recovery:bootable/recovery frameworks_base:frameworks/base external_clang:external/clang art:art system_sepolicy:system/sepolicy system_core:system/core; do
+            name=${pair%%:*}; dir=${pair##*:}
+            if [ -f patches/$name.patch ]; then
+              echo "applying $name -> $dir"
+              (cd ~/twrp/$dir && git apply --whitespace=nowarn ~/twrp/device/samsung/gtactive2lte/patches/$name.patch)
+            fi
+          done
+      - name: Build recovery image
+        run: |
+          cd ~/twrp
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C.UTF-8
+          set +u
+          source build/envsetup.sh
+          lunch omni_gtactive2lte-userdebug
+          mka -j4 recoveryimage
+      - name: Package for Odin
+        run: |
+          out=~/twrp/out/target/product/gtactive2lte
+          ls -la $out/recovery.img
+          mkdir -p ~/result
+          cp $out/recovery.img ~/result/recovery.img
+          printf 'SEANDROIDENFORCE' >> ~/result/recovery.img
+          cd ~/result
+          tar -H ustar -c recovery.img > twrp-gtactive2lte.tar
+          md5sum twrp-gtactive2lte.tar >> twrp-gtactive2lte.tar
+          mv twrp-gtactive2lte.tar twrp-gtactive2lte.tar.md5
+          ls -la
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: twrp-gtactive2lte
+          path: ~/result/*
